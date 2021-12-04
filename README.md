@@ -27,7 +27,7 @@ source ./envvars/prd.env
 ```
 ## My Workflow
 
-1. Create or update adoc files, including index.adoc if required. I use VSCode with an AsciiDoc extension to achieve this.
+1. Create or update adoc files, including index.adoc if required. I use VSCode with an AsciiDoc extension.
 2. Build and run the container locally.
 3. Review (test) new content locally.
 4. Commit changes to repo.
