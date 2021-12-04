@@ -2,7 +2,7 @@
 :toclevels: 4
 = Technical Cheat Sheet
 
-A collection of useful commands. Many are basic and given the popularity of Terraform/Ansible/Cloud-Init I'm not sure how often I'll really need to revisit these. Anyway, they sure helped me out over the years especially when getting started.
+A dumping ground for commands I found useful over the years.
 
 == Docker
 
