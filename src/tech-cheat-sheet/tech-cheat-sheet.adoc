@@ -2,7 +2,426 @@
 :toclevels: 4
 = Technical Cheat Sheet
 
-A collection of helpful commands. Many are basic and given the popularity of Terraform/Ansible/Cloud-Init I'm not sure how often I'll really need to revisit these but anyway they've helped me out over the years and everyone needs to start somewhere. :)
+A collection of useful commands. Many are basic and given the popularity of Terraform/Ansible/Cloud-Init I'm not sure how often I'll really need to revisit these. Anyway, they sure helped me out over the years especially when getting started.
+
+== Docker
+
+=== Export / Import Docker container
+```bash
+# Export the image to a tar file
+docker save -o <path for generated tar file> <image name>
+
+# Import it where you need it
+docker load -i <path to image tar file>
+```
+
+=== How to use a docker container when specific version of kubectl is required
+```bash
+docker run --entrypoint ["tail", "-f", "/dev/null"] --name kubectl116 -v /home/user/<username>/.kube/config:/.kube/config bitnami/kubectl:1.16
+```
+
+=== Run containers
+```bash
+# One off busybox
+docker run -it --rm busybox
+```
+
+=== Start up Racher Server in Dev environment
+```bash
+sudo docker volume create \
+  -d netapp \ # If using NetApp driver
+  --name rancherData --opt size=20G
+
+sudo docker run -d --restart=unless-stopped \
+  -p 80:80 -p 443:443 \
+  -v rancherData:/var/lib/rancher \
+  --privileged \
+  --name=rancher \
+  rancher/rancher:latest
+```
+
+== Kubernetes
+
+=== Basics
+```bash
+# List all resources in a namespace
+kubectl -n default api-resources --namespaced=true -o name | xargs --verbose -I {} kubectl -n NAMESPACE get {} --show-kind --ignore-not-found
+
+# List all resources in all namespaces
+kubectl -n default api-resources --namespaced=true -o name | xargs --verbose -I {} kubectl -n NAMESPACE get {} --show-kind --ignore-not-found
+
+for n in $(kubectl get namespaces -o jsonpath={..metadata.name}); do
+  kubectl -n $n api-resources --namespaced=true -o name | xargs --verbose -I {} kubectl -n $n get {} --show-kind --ignore-not-found >> tmp.log
+done
+
+# List all nodes in the cluster
+kubectl get nodes
+
+# List all the pods in all namespaces
+kubectl get pods --all-namespaces
+
+# List all the namespaces in the cluster
+kubectl get namespaces
+
+# Check to see if there are any pods running in the default namespace
+kubectl get pods
+kubectl get pods -n default
+
+# Find the IP address of the API server running on the master node
+kubectl get pods --all-namespaces -o wide
+
+# Find deployments in the cluster
+kubectl get deployments --all-namespaces
+
+# Find pod labels
+kubectl get pods --all-namespaces --show-labels -o wide
+
+# Helpful bash autocomplete stuff
+yum install -y bash-completion
+source <(kubectl completion bash) # setup autocomplete in bash into the current shell, bash-completion package should be installed first.
+echo "source <(kubectl completion bash)" >> ~/.bashrc # add autocomplete permanently to your bash shell.
+alias k=kubectl
+complete -F __start_kubectl k
+
+# Port forward app1 with screen
+screen -dmS app1 kubectl -n <namespace> port-forward deployment/app1 8081:8081 --address=0.0.0.0
+
+# Example of a custom column output
+kubectl get pods -o custom-columns=POD:metadata.name,NODE:spec.nodeName --sort-by spec.nodeName -n kube-system
+
+# Manually execute a cronjob
+kubectl create job --from=cronjob/<cronjob-name> <job-name>
+
+# Kubectl cheat sheet links
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#kubectl-autocomplete
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#kubectl-context-and-configuration
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#creating-objects
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#viewing-finding-resources
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#updating-resources
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#patching-resources
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#editing-resources
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#scaling-resources
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#deleting-resources
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#interacting-with-running-pods
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#interacting-with-nodes-and-cluster
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#formatting-output
+https://kubernetes.io/docs/reference/kubectl/cheatsheet/#kubectl-output-verbosity-and-debugging
+
+# Change default namespace to 'demo'
+kubectl config set-context --current --namespace=demo
+
+# List all the APIs in a cluster
+kubectl api-resources -o name
+
+# Liveness versus Readiness
+Liveness is a custom way to check if the pod is healthy, and if not to restart the pod. If the liveness probe fails, the pod is restarted.
+Readiness means the pod is ready to service requests (it will be added as a live endpoint).
+
+# Script to find all PV's with a status != 'Bound' and delete them
+kubectl -n <namespace> get pv | tail -n +2 | grep -v Bound | awk '{print $1}' | xargs -I{} kubectl -n <namespace> delete pv {}
+
+# Add the following feature-gate setting to /etc/kuberenetes/manifests/kube-apiserver.yaml to enable alpha snap shot features on master nodes.
+# - --feature-gates=VolumeSnapshotDataSource=true
+
+# This kubectl command selects all Pods for which the value of the status.phase field is Running:
+kubectl get pods --field-selector status.phase=Running
+
+# These in effect mean the same:
+kubectl get pods
+kubectl get pods --field-selector ""
+
+# Chaining queries
+kubectl get pods --field-selector=status.phase!=Running,spec.restartPolicy=Always
+kubectl get statefulsets,services --all-namespaces --field-selector metadata.namespace!=default
+```
+
+=== Changing environment variables
+```bash
+# Add or edit an environment variable 'TEST'
+kubectl -n <namespace> set env deployment/<deployment> --containers=<container> TEST="123"
+
+# Remove the environment variable 'TEST'
+kubectl -n <namespace> set env deployment/<deployment> --containers=<container> TEST-
+
+# Show all environment variables
+kubectl -n <namespace> set env deployment/<deployment> --list
+```
+
+=== Changing images
+```bash
+# Get all pod images
+kubectl get pods --all-namespaces -o=jsonpath='{range .items[*]}{"\n"}{.metadata.name}{":\t"}{range .spec.containers[*]}{.image}{", "}{end}{end}' |\
+sort
+
+# Update container image
+kubectl -n <namespace> set image deployment/<deployment-name> <container-name>=<container:tag> --record
+ 
+# Undo deployment
+kubectl -n <namespace> rollout undo deployment/<deployment-name>
+
+```
+
+=== Deployment rollouts with kubectl
+```bash
+## Create and roll out a deployment, and verify the deployment was successful.
+cat << EOF > kubeserv.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubeserve
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kubeserve
+  template:
+    metadata:
+      name: kubeserve
+      labels:
+        app: kubeserve
+    spec:
+      containers:
+      - image: linuxacademycontent/kubeserve:v1
+        name: app
+EOF
+
+kubectl apply -f kubeserve-deployment.yaml --record
+
+kubectl rollout status deployment kubeserve
+
+## Verify the application is using the correct version.
+kubectl describe deployment kubeserve
+
+## Scale up your application up to 10 pods to create high availability
+kubectl scale deployment kubeserve --replicas 10
+
+## Create a service from your deployment, so users can access your application.
+kubectl expose deployment kubeserve --port=80 --target-port=80 --type NodePort
+kubectl get service
+
+## Perform a rolling update to version 2 of the application.
+kubectl set image deployments/kubeserve app=linuxacademycontent/kubeserve:v2 --v 6
+
+## Verify the app is now at version 2 and there was no downtime to end users.
+kubectl rollout history deployment kubeserve
+```
+=== Example of restricting a pod to a specific K8s resource
+```bash
+#    View the Persistent Volume using the kubectl command line tool.
+kubectl get pv
+kubectl describe pv
+
+# Create a ClusterRole.
+kubectl create clusterrole pv-reader --verb=get,list --resource=persistentvolumes
+
+# Create a ClusterRoleBinding.
+kubectl create clusterrolebinding pv-test --clusterrole=pv-reader --serviceaccount=web:default
+
+# Create a pod within the namespace 'web' to access the PV.
+cat << EOF > curlpod.yml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curlpod
+  namespace: web
+spec:
+  containers:
+  - image: tutum/curl
+    command: ["sleep", "9999999"]
+    name: main
+  - image: linuxacademycontent/kubectl-proxy
+    name: proxy
+  restartPolicy: Always
+EOF
+kubectl apply -f curlpod.yml
+
+# Request access to the PV from the pod.
+kubectl exec -it curlpod -n web -- sh
+curl localhost:8001/api/v1/persistentvolumes
+```
+
+=== NGINX load balancer for Kube API
+```bash
+# Install NGINX
+sudo apt-get install -y nginx
+sudo systemctl enable nginx
+
+# Configure Nginx to balance Kubernetes API traffic across the two controllers.
+# Do the following to configure the Nginx load balancer:
+sudo mkdir -p /etc/nginx/tcpconf.d
+sudo vi /etc/nginx/nginx.conf
+
+# Add the following configuration at the bottom of nginx.conf:
+include /etc/nginx/tcpconf.d/*;
+
+# Create a config file to configure Kubernetes API load balancing:
+cat << EOF | sudo tee /etc/nginx/tcpconf.d/kubernetes.conf
+stream {
+    upstream kubernetes {
+        server <k8m01-ip>:6443;
+        server <k8m02-ip>:6443;
+        server <k8m03-ip>:6443;
+    }
+
+    server {
+        listen 6443;
+        listen 443;
+        proxy_pass kubernetes;
+    }
+}
+
+EOF
+
+# Reload the Nginx configuration:
+sudo nginx -s reload
+
+# You can verify that everything is working by making a request to the Kubernetes API through the load balancer:
+curl -k https://localhost:6443/version
+```
+
+=== Pause a workload
+```bash
+image: <container-image:tag>
+command: ["tail", "-f", "/dev/null"]
+```
+
+=== Prometheus fixes
+```bash
+# I'm sure this would have been patched by now but remember needing to do this at some point in the earlier days of the Prometheus Operator.
+# Ensure ETCD is listening on all interfaces by editing the manifest on the master nodes
+# SSH to each master node and edit the following line in /etc/kubernetes/manifests/etcd.yaml
+# OLD:- --listen-metrics-urls=http://127.0.0.1:2381
+# NEW:- --listen-metrics-urls=http://0.0.0.0:2381
+# Then, edit the prom-kube-etcd service in the kube-system namespace to ensure the correct port is being used
+kubectl edit service -n kube-system prom-kube-etcd
+# update the 'targetPort' from 2379 to 2381
+
+# Edit the kube-proxy configmap to listen on all interfaces.
+kubectl edit configmap -n kube-system kube-proxy
+# update the 'metricsBindAddress' from '127.0.0.1:10249' to '0.0.0.0:10249'
+# A manual restart of the Kube Proxy daemon set is required to apply the changes
+kubectl rollout restart daemonset -n kube-system kube-proxy
+```
+
+=== Replace a master node with kubeadm
+```bash
+# From https://octetz.com/docs/2019/2019-03-26-ha-control-plane-kubeadm/.
+# Maybe deprecated by now, need to check.
+
+# Run kubeadm reset on broken master
+sudo kubeadm reset
+
+# Delete node with kubectl
+kubectl delete node <master>
+
+# On healthy Master
+sudo kubeadm token create --ttl 1h --print-join-command
+sudo kubeadm init phase upload-certs --experimental-upload-certs
+
+# On new/replaced Master, use the outputs from above
+sudo kubeadm join <kubeapi address> \
+    --control-plane \
+    --certificate-key <cert-key> \
+    --token <token> \
+    --discovery-token-ca-cert-hash <ca-cert-hash>
+```
+
+=== Resource testing
+```bash
+cat << EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-consumer-big
+spec:
+  containers:
+  - name: resource-consumer
+    image: gcr.io/kubernetes-e2e-test-images/resource-consumer:1.4
+    resources:
+      requests:
+        cpu: 500m
+        memory: 128Mi
+  - name: busybox-sidecar
+    image: radial/busyboxplus:curl
+    command: [/bin/sh, -c, 'until curl localhost:8080/ConsumeCPU -d "millicores=300&durationSec=3600"; do sleep 5; done && sleep 3700']
+EOF
+
+kubectl top pods
+kubectl top pod resource-consumer-big
+kubectl top pods -n kube-system
+kubectl top nodes
+```
+=== Tcpdump pod as sidecar
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example
+
+spec:
+  containers:
+  - name: tcpdump
+    image: corfr/tcpdump
+    command: 
+    - /bin/sleep
+    - infinity
+  - name: nginx
+    image: nginx:latest
+  restartPolicy: Never
+  dnsConfig:
+    options:
+    - name: ndots
+      value: "1"
+```
+=== Using local storage
+```bash
+# Create a folder to use on worker node 'k8w01'
+mkdir -p /home/app/datavol
+```
+```yaml
+# Create a persistent volume that uses the local storage
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: datavol
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: local-storage
+  local:
+    path: /home/app/datavol/
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - k8w01
+```
+
+=== Utility pods with kubectl run
+```bash
+# DNS
+kubectl run -it -n kube-system --rm --image=gcr.io/kubernetes-e2e-test-images/dnsutils:1.3 --restart=Never dnsutils -- nslookup kubernetes.default
+
+# MySQL
+kubectl run -it --rm --image=mysql:5.7 --restart=Never mysql-client -- mysql -u <username> -h <mysql-service> -p
+
+# PostGres
+kubectl run -it --rm --image=jbergknoff/postgresql-client --env="PGPASSWORD=password" --restart=Never psql -- psql --host=<posgres-service> --dbname=postgres --username postgres
+
+# curl
+kubectl run -it --rm --image=curlimages/curl --restart=Never curl -- curl http://<url> --max-time 5
+
+# wget
+kubectl run -it --rm --image=busybox --restart=Never busybox -- wget --spider http://<url> --max-time 5
+```
+
 
 == Linux
 
@@ -355,45 +774,7 @@ sudo apt install whois
 mkpasswd --method=SHA-512 --rounds=4096
 ```
 
-=== Docker
 
-==== Export / Import Docker container
-```bash
-# Export the image to a tar file
-docker save -o <path for generated tar file> <image name>
-
-# Import it where you need it
-docker load -i <path to image tar file>
-```
-
-==== How to use a docker container when specific version of kubectl is required
-```bash
-docker run --entrypoint ["tail", "-f", "/dev/null"] --name kubectl116 -v /home/user/<username>/.kube/config:/.kube/config bitnami/kubectl:1.16
-```
-
-==== Run containers
-```bash
-# One off busybox
-docker run -it --rm busybox
-```
-
-
-
-
-
-==== Start up Racher Server in Dev environment
-```bash
-sudo docker volume create \
-  -d netapp \ # If using NetApp driver
-  --name rancherData --opt size=20G
-
-sudo docker run -d --restart=unless-stopped \
-  -p 80:80 -p 443:443 \
-  -v rancherData:/var/lib/rancher \
-  --privileged \
-  --name=rancher \
-  rancher/rancher:latest
-```
 
 === General
 
@@ -402,6 +783,7 @@ sudo docker run -d --restart=unless-stopped \
 # Test proxy with WGET (may need a more recent version of WGET)
 wget --spider -e use_proxy=yes -e http_proxy=10.61.39.66:80 www.google.com
 ```
+
 
 === Vim
 
