@@ -2,7 +2,7 @@
 :toclevels: 4
 = Technical Cheat Sheet
 
-A dumping ground for commands I found useful over the years.
+A dumping ground for commands I've collected at random over the years. I really need to go through this and clean it up in due course.
 
 == Docker
 
@@ -89,8 +89,9 @@ screen -dmS app1 kubectl -n <namespace> port-forward deployment/app1 8081:8081 -
 # Example of a custom column output
 kubectl get pods -o custom-columns=POD:metadata.name,NODE:spec.nodeName --sort-by spec.nodeName -n kube-system
 
-# Manually execute a cronjob
+# Manually execute a cronjob (creates a new job so remember to clean up after if desirable)
 kubectl create job --from=cronjob/<cronjob-name> <job-name>
+kubectl delete job <job-name>
 
 # Kubectl cheat sheet links
 https://kubernetes.io/docs/reference/kubectl/cheatsheet/#kubectl-autocomplete
@@ -765,6 +766,43 @@ ps -ef | grep <pid>
 kill $(pidof firefox)
 ```
 
+==== SSH permissions
+```bash
++------------------------+-------------------------------------+-------------+-------------+
+| Directory or File      | Man Page                            | Recommended | Mandatory   |
+|                        |                                     | Permissions | Permissions |
++------------------------+-------------------------------------+-------------+-------------+
+| ~/.ssh/                | There is no general requirement to  | 700         |             |
+|                        | keep the entire contents of this    |             |             |
+|                        | directory secret, but the           |             |             |
+|                        | recommended permissions are         |             |             |
+|                        | read/write/execute for the user,    |             |             |
+|                        | and not accessible by others.       |             |             |
++------------------------+-------------------------------------+-------------+-------------+
+| ~/.ssh/authorized_keys | This file is not highly sensitive,  | 600         |             |
+|                        | but the recommended permissions are |             |             |
+|                        | read/write for the user, and not    |             |             |
+|                        | accessible by others                |             |             |
++------------------------+-------------------------------------+-------------+-------------+
+| ~/.ssh/config          | Because of the potential for abuse, |             | 600         |
+|                        | this file must have strict          |             |             |
+|                        | permissions: read/write for the     |             |             |
+|                        | user, and not accessible by others. |             |             |
+|                        | It may be group-writable provided   |             |             |
+|                        | that the group in question contains |             |             |
+|                        | only the user.                      |             |             |
++------------------------+-------------------------------------+-------------+-------------+
+| ~/.ssh/identity        | These files contain sensitive data  |             | 600         |
+| ~/.ssh/id_dsa          | and should be readable by the user  |             |             |
+| ~/.ssh/id_rsa          | but not accessible by others        |             |             |
+|                        | (read/write/execute)                |             |             |
++------------------------+-------------------------------------+-------------+-------------+
+| ~/.ssh/identity.pub    | Contains the public key for         | 644         |             |
+| ~/.ssh/id_dsa.pub      | authentication.  These files are    |             |             |
+| ~/.ssh/id_rsa.pub      | not sensitive and can (but need     |             |             |
+|                        | not) be readable by anyone.         |             |             |
++------------------------+-------------------------------------+-------------+-------------+
+```
 === Cloud-init
 
 ==== Password hashing
@@ -784,6 +822,15 @@ mkpasswd --method=SHA-512 --rounds=4096
 wget --spider -e use_proxy=yes -e http_proxy=10.61.39.66:80 www.google.com
 ```
 
+=== Ubuntu
+
+==== Storage performance testing
+```bash
+# fio https://arstechnica.com/gadgets/2020/02/how-fast-are-your-disks-find-out-the-open-source-way-with-fio/
+sudo apt-get install fio
+
+sudo fio --name=random-write --ioengine=posixaio --rw=randrw --bs=4k --numjobs=1 --size=90g --iodepth=1 --runtime=604800 --time_based --end_fsync=1
+```
 
 === Vim
 
@@ -796,3 +843,65 @@ Occasionally I need to paste data in to a file opened with vim and find that it'
 ```
 Great Vim Cheat Sheet: https://vim.rtorr.com/
 
+== Minio
+
+=== Create a policy
+
+I used the following to create a new policy in Minio against server 'test', allowing the user 'user1' to download reports.
+
+```bash
+
+kubectl run -it minio/mc --rm -- bash
+
+# First, create the policy as json with the required configuration allowing read only to the 'reports' url.
+
+cat > policy-name.json << EOF
+{
+ "Version":"2012-10-17",
+ "Statement": [
+   {
+     "Sid": "AllowUserToSeeBucketListInTheConsole",
+     "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
+     "Effect": "Allow",
+     "Resource": ["arn:aws:s3:::reports*"]
+   },
+   {
+     "Sid": "AllowListingOfUserFolder",
+     "Action": ["s3:ListBucket"],
+     "Effect": "Allow",
+     "Resource": ["arn:aws:s3:::reports"]
+   },
+   {
+     "Sid": "AllowAllS3ActionsInUserFolder",
+     "Effect": "Allow",
+     "Action": ["s3:GetObject"],
+     "Resource": ["arn:aws:s3:::reports/*"]
+   }
+ ]
+}
+EOF
+
+mc admin policy add test policy-name policy-name.json
+mc admin user add test user1 password
+mc admin policy set test policy-name user=user1
+exit
+```
+
+== MySQL
+
+=== Create User
+```bash
+# Open MySQL database to user1 from all IP's
+CREATE USER 'user1'@'%' IDENTIFIED BY 'password';
+GRANT ALL PRIVILEGES ON *.* TO 'user1'@'%' IDENTIFIED BY 'password' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+BYE;
+```
+=== Backup Restore
+```bash
+# Dump specific table from remote host
+mysqldump -u root -h <ip> -p <schema> <source_table> > ./backup.sql
+
+# At destination host, restore the table 
+mysql -u root -h -p  < ./backup.sql
+```
