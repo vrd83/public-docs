@@ -811,6 +811,28 @@ kill $(pidof firefox)
 sudo apt install whois
 mkpasswd --method=SHA-512 --rounds=4096
 ```
+==== Ubuntu
+As per https://askubuntu.com/questions/1366315/terraform-cloud-init-via-extra-config-datasourcevmware[this article] on Stack Overflow, edit cloud init's configuration if using "extra config" is desirable with Terraform, rather than vApp settings.
+
+This needs it's own blog post.
+
+1. [Web Browser] Download OVA: https://cloud-images.ubuntu.com/impish/current/impish-server-cloudimg-amd64.ova
+2. [VC UI] Deploy from OVF, accept defaults (except disk provisioning, use Thin Provisioning).
+3. [VC UI] Edit Settings / VM Options / Boot Options / Boot Delay = 2000ms.
+4. [VC UI] Open VM Console.
+5. [VM Console] Power On VM.
+6. [VM Console] Hold Shift on BIOS screen (to force GRUB to display menu).
+7. [VM Console] Select Advanced Options for Ubuntu.
+8. [VM Console] Select latest kernel version with "(recovery mode)" at the end.
+9. [VM Console] Select "root / Drop to root shell prompt"
+10. [VM Console] Press Enter for maintenance
+11. [VM Console] # dpkg-reconfigure cloud-init
+12. [VM Console] Deselect everything except VMware and None
+13. [VM Console] # cloud-init clean
+14. [VM Console] # shutdown -h now
+15. [VC UI] Edit Settings / VM Options / Boot Options / Boot Delay = 0ms.
+16. [VC UI] Convert to template
+
 
 
 
