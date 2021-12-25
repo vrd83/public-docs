@@ -6,7 +6,7 @@ RELEASE_MINOR="release-minor"
 RELEASE_MAJOR="release-major"
 
 # Fetch current version using gcloud sdk
-CUR_VER=$(gcloud run services describe $GCP_CLOUD_RUN_SERVICE --format='flattened(metadata.annotations)' --region=$GCP_REGION | grep $GCP_CLOUD_RUN_SERVICE: | grep -o '.....$')
+CUR_VER=$(gcloud run services describe $GCP_CLOUD_RUN_SERVICE --format='flattened(metadata.annotations)' --region=$GCP_REGION | grep $GCP_CLOUD_RUN_SERVICE: | sed -n 's/.*public-docs://p')
 
 # Validate argument. I could remove this as calling the script with the Makefile enforces the correct argument but it's nice to have as reference. 
 if [ ${1} != ${RELEASE_PATCH} ] && [ ${1} != ${RELEASE_MINOR} ] && [ ${1} != ${RELEASE_MAJOR} ];
