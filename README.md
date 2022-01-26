@@ -15,12 +15,13 @@ I have installed Docker, the gcloud sdk and authenticated to GCP. I then deploye
 
 ## Getting Started
 
-I create an env file containing my configuration variables and source it. The Makefile and workflow_helper script depend on the environment variables.
+I create an env file containing my configuration variables and source it. The Makefile and workflow_helper script depend on the environment variables. See below for an example.
 ```console
 cat << EOF >> envvars/prd.env
-export GCP_REGION='region'
-export GCP_PROJECT='project-id'
-export GCP_CLOUD_RUN_SERVICE='service-name'
+export GCP_REGION='us-west1'
+export GCP_PROJECT='public-docs-123'
+export GCP_REPO_NAME='container-images'
+export GCP_CLOUD_RUN_SERVICE='public-documentation'
 EOF
 
 source ./envvars/prd.env
