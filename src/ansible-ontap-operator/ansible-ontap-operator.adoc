@@ -26,7 +26,7 @@ For the initial proof of concept, let's see if we can get the operator to perfor
 2. Create and remove volumes.
 3. Create and remove shares.
 
-== Getting Started
+== Development Environment
 
 First things first, I'll need to prepare my development environment.
 
@@ -48,14 +48,11 @@ image::welcome-to-rancher-desktop.png[]
 
 I'll stick with the defaults use containerd as my runtime and the latest version of Kubernetes available in Rancher Desktop.
 
-The https://docs.rancherdesktop.io/faq[FAQ] says I will find my configuration file in the default location (~/.kube/config). I'll quickly rename and add that file to my KUBECONFIG environment variable list:
+The https://docs.rancherdesktop.io/faq[FAQ] says I will find my configuration file in the default location (~/.kube/config). I do have a seperate config file for my RKE1 cluster so add that file to my KUBECONFIG environment variable list:
 
 ```bash
-# Rename the config file
-❯ mv ~/.kube/config ~/.kube/rancher-desktop.yml
-
-# Add the config file to my KUBECONFIG environment variable (I use zsh with oh-my-zsh:  https://github.com/ohmyzsh/ohmyzsh#custom-directory).
-❯ echo "export KUBECONFIG=$KUBECONFIG:$HOME/.kube/rancher-desktop.yml" >> $HOME/.oh-my-zsh/custom/config.zsh
+# Add the config file to my KUBECONFIG environment variable (I use zsh with oh-my-zsh:  https://github.com/ohmyzsh/ohmyzsh#custom-directory). I add the following line:
+export KUBECONFIG='$KUBECONFIG:$HOME/.kube/config'
 
 # Source the changes
 ❯ source $HOME/.oh-my-zsh/custom/config.zsh
@@ -77,7 +74,7 @@ lima-rancher-desktop   Ready    control-plane,master   31m   v1.23.2+k3s1
 Looking good! As an aside you'll notice a few command aliases in use there, there are available as part of the https://github.com/ohmyzsh/ohmyzsh/blob/master/plugins/kubectl/README.md[kubectl ohmyzsh plugin].
 
 === ONTAP System
-Finally, we'll need the details of the ONTAP system. For this POC I'm using the NetApp ONTAP simulator to simulate a single node ONTAP system running in a VMware ESX environment. I'll keep the setup of the ONTAP simulator out of scope in this blog, but we can note down the following basic configuration:
+Finally, we'll need the details of the ONTAP system. For this POC I'm using the NetApp ONTAP simulator to simulate a single node ONTAP system running in a VMware ESX environment. I'll keep the setup of the ONTAP simulator out of scope in this blog to focus on the operator bits but we can note down the following basic configuration:
 
 |=== 
 |Configuration Item |Value
@@ -92,4 +89,225 @@ Finally, we'll need the details of the ONTAP system. For this POC I'm using the 
 |192.168.2.201
 
 |===
+
+== Building the Operator
+
+With the development environment set up (I think  - we'll soon find out!), we should be ready to rock and roll.
+
+=== Scaffolding
+
+Let's create a new folder to store the operator code and initialize the project using the operatork-sdk binary by following along with the https://sdk.operatorframework.io/docs/building-operators/ansible/tutorial/[Ansible Operator Tutorial] documentation. I'm going to give this operator the very original name of "ontap-operator". I'll also use my domain "vaughanross.io" but this could be anything for the purposes of the POC.
+
+```bash
+❯ mkdir ontap-operator 
+❯ cd ontap-operator
+❯ operator-sdk init --plugins ansible --domain vaughanross.io
+Writing kustomize manifests for you to edit...
+Next: define a resource with:
+$ operator-sdk create api
+```
+
+That was easy. Using VSCode or running 'tree' in the terminal I can see the SDK has generated 16 new directories and 45 files. 
+
+Next, we'll extend the Kubernetes API by creating custom resource definitions (CRDs). Considering the scope of the POC is to manage SVM's, Volumes and Shares, it's reasonable to create a CRD for each type under the 'ontap' group.
+
+```bash
+❯ operator-sdk create api --group ontap --version v1alpha1 --kind StorageVirtualMachine --generate-role
+Writing kustomize manifests for you to edit...
+❯ operator-sdk create api --group ontap --version v1alpha1 --kind Volume --generate-role
+Writing kustomize manifests for you to edit...
+❯ operator-sdk create api --group ontap --version v1alpha1 --kind Share --generate-role
+Writing kustomize manifests for you to edit...
+```
+
+Using tree I can see the SDK has created a role with the usual Ansible directory structure for each type under the roles folder. Very cool.
+
+```bash
+❯ tree roles -d    
+roles
+├── share
+│   ├── defaults
+│   ├── files
+│   ├── handlers
+│   ├── meta
+│   ├── tasks
+│   ├── templates
+│   └── vars
+├── storagevirtualmachine
+│   ├── defaults
+│   ├── files
+│   ├── handlers
+│   ├── meta
+│   ├── tasks
+│   ├── templates
+│   └── vars
+└── volume
+    ├── defaults
+    ├── files
+    ├── handlers
+    ├── meta
+    ├── tasks
+    ├── templates
+    └── vars
+```
+
+Next, let's review some of the files in the root of the project folder and update them as required.
+
+```bash
+❯ cat Dockerfile    
+FROM quay.io/operator-framework/ansible-operator:v1.16.0
+
+COPY requirements.yml ${HOME}/requirements.yml
+RUN ansible-galaxy collection install -r ${HOME}/requirements.yml \
+ && chmod -R ug+rwx ${HOME}/.ansible
+
+COPY watches.yaml ${HOME}/watches.yaml
+COPY roles/ ${HOME}/roles/
+COPY playbooks/ ${HOME}/playbooks/
+```
+
+We can see the Dockerfile will install any collections found in the requirements.yml file. It also copies the watches.yaml file along with the roles and playbooks folder in to the container. Fair enough! We already know we'll need the ontap collection from Ansible galaxy, so let's add it to the requirements.yml file.
+
+```yaml
+---
+collections:
+  - name: community.kubernetes
+    version: "1.2.1"
+  - name: operator_sdk.util
+    version: "0.3.1"
+  - name: kubernetes.core
+    version: "2.2.0"
+#  My addition is below this line.
+  - name: netapp.ontap
+    version: "21.15.1"
+```
+
+Finally, let's review the watches.yaml file.
+
+```bash
+cat watches.yaml
+---
+# Use the 'create api' subcommand to add watches to this file.
+- version: v1alpha1
+  group: ontap.vaughanross.io
+  kind: StorageVirtualMachine
+  role: storagevirtualmachine
+- version: v1alpha1
+  group: ontap.vaughanross.io
+  kind: Volume
+  role: volume
+- version: v1alpha1
+  group: ontap.vaughanross.io
+  kind: Share
+  role: share
+#+kubebuilder:scaffold:watch
+```
+We note that this file tells the operator to watch each CRD created earlier and run the corresponding role when changes are detected. We will most likely need to come back and fine tune this later.
+
+At this stage, I'm confident we have the scaffolding in place and although it's not functional, I'd like to test a deployment of the operator in to my local Kubernetes cluster to see that it runs and also test that the changes to the requirements.yaml file work as intended. Fortunately, the SDK also generated a Makefile with convenient preconfigured targets allowing us to build, test and deploy.
+
+=== Container Image Creation
+
+I've created a public repository "vaughanross/ontap-operator" on DockerHub to store the operator image, and so make the following adjustments to the Makefile.
+
+```git
+-IMAGE_TAG_BASE ?= vaughanross.io/ontap-operator
++IMAGE_TAG_BASE ?= vaughanross/ontap-operator
+
+-IMG ?= controller:latest
++IMG ?= $(IMAGE_TAG_BASE):$(VERSION)
+
+```
+
+I've run docker auth to authenticate to the repository ans so should now be able to build and push the container image using the Makefile.
+
+```bash
+❯ make docker-build docker-push VERSION=0.0.1
+docker build -t vaughanross/ontap-operator:0.0.1 .
+Sending build context to Docker daemon  34.18MB
+Step 1/6 : FROM quay.io/operator-framework/ansible-operator:v1.16.0
+v1.16.0: Pulling from operator-framework/ansible-operator
+26f1167feaf7: Pull complete 
+adffa6963146: Pull complete 
+34392db44a7a: Pull complete 
+f87d97c96420: Pull complete 
+45ceea710a34: Pull complete 
+d80aabd8d47a: Pull complete 
+ba4214f4154e: Pull complete 
+d349a89ada27: Pull complete 
+Digest: sha256:df76f066bc267be1d73a701b6791abcb4646b3d31c70ba31b2fca778a8bc99de
+Status: Downloaded newer image for quay.io/operator-framework/ansible-operator:v1.16.0
+ ---> 352cac8432b5
+Step 2/6 : COPY requirements.yml ${HOME}/requirements.yml
+ ---> bde47aec3a17
+Step 3/6 : RUN ansible-galaxy collection install -r ${HOME}/requirements.yml  && chmod -R ug+rwx ${HOME}/.ansible
+ ---> Running in 2e18b6ad0a60
+Process install dependency map
+Starting collection install process
+Installing 'community.kubernetes:1.2.1' to '/opt/ansible/.ansible/collections/ansible_collections/community/kubernetes'
+Installing 'operator_sdk.util:0.3.1' to '/opt/ansible/.ansible/collections/ansible_collections/operator_sdk/util'
+Installing 'kubernetes.core:2.2.0' to '/opt/ansible/.ansible/collections/ansible_collections/kubernetes/core'
+Installing 'netapp.ontap:21.15.1' to '/opt/ansible/.ansible/collections/ansible_collections/netapp/ontap'
+Removing intermediate container 2e18b6ad0a60
+ ---> 30c9915c8081
+Step 4/6 : COPY watches.yaml ${HOME}/watches.yaml
+ ---> a4b20b3df0af
+Step 5/6 : COPY roles/ ${HOME}/roles/
+ ---> 9a26e1daefd0
+Step 6/6 : COPY playbooks/ ${HOME}/playbooks/
+ ---> e03cac920462
+Successfully built e03cac920462
+Successfully tagged vaughanross/ontap-operator:0.0.1
+docker push vaughanross/ontap-operator:0.0.1
+The push refers to repository [docker.io/vaughanross/ontap-operator]
+7360d40299aa: Pushed 
+f3eaeb4ecc8b: Pushed 
+e0795cc39e1e: Pushed 
+fe37890326dd: Pushed 
+f85b884a7c0b: Pushed 
+a6ee3241e4b6: Pushed 
+40a9bab6edf7: Pushed 
+67235be480de: Pushed 
+c1ec8952b903: Pushed 
+7bb5fcd3789d: Pushed 
+e3313ed16678: Pushed 
+3ba8c926eef9: Pushed 
+352ba846236b: Pushed 
+0.0.1: digest: sha256:4f1d34aa235a9630f3fbd9215fb04a3161d1444f35778311457d2843f0311de5 size: 3033
+```
+No errors and we can see from the build logs the controller has installed the ontap collection.
+
+=== Operator Deployment
+
+With the image pushed to the registry, let's try deploy the operator as is to Kubernetes.
+
+```bash
+❯ make deploy VERSION=0.0.1                  
+cd config/manager && /home/vaughan/code/vaughanross/ontap-operator/bin/kustomize edit set image controller=vaughanross/ontap-operator:0.0.1
+/home/vaughan/code/vaughanross/ontap-operator/bin/kustomize build config/default | kubectl apply -f -
+namespace/ontap-operator-system created
+customresourcedefinition.apiextensions.k8s.io/shares.ontap.vaughanross.io created
+customresourcedefinition.apiextensions.k8s.io/storagevirtualmachines.ontap.vaughanross.io created
+customresourcedefinition.apiextensions.k8s.io/volumes.ontap.vaughanross.io created
+serviceaccount/ontap-operator-controller-manager created
+role.rbac.authorization.k8s.io/ontap-operator-leader-election-role created
+clusterrole.rbac.authorization.k8s.io/ontap-operator-manager-role created
+clusterrole.rbac.authorization.k8s.io/ontap-operator-metrics-reader created
+clusterrole.rbac.authorization.k8s.io/ontap-operator-proxy-role created
+rolebinding.rbac.authorization.k8s.io/ontap-operator-leader-election-rolebinding created
+clusterrolebinding.rbac.authorization.k8s.io/ontap-operator-manager-rolebinding created
+clusterrolebinding.rbac.authorization.k8s.io/ontap-operator-proxy-rolebinding created
+configmap/ontap-operator-manager-config created
+service/ontap-operator-controller-manager-metrics-service created
+deployment.apps/ontap-operator-controller-manager created
+```
+That's a fair bit. Reviewing the list we see the Makefile deploy target has kustomized and deployed all resources, including the namespace "ontap-operator-system", the custom resource definitions, the RBAC serviceaccounts, roles, rolebindings and finally the deployment along with a configmap. 
+
+Let's ensure the deployment is running.
+
+```bash
+❯ k get deployment -n ontap-operator-system
+NAME                                READY   UP-TO-DATE   AVAILABLE   AGE
+ontap-operator-controller-manager   1/1     1            1           5m44s
+```
 
