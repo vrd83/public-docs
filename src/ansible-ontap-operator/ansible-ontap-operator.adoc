@@ -1,0 +1,95 @@
+:toc: left
+:toclevels: 2
+:imagesdir: ../images
+= Ansible ONTAP Operator
+
+== Overview
+
+The purpose of this blog post is to document how easy (or difficult as the case may be!) it is to build a proof of concept Kubernetes Ansible based operator with the Red Hat operator framework. My goal is to for the operator to manage NetApp ONTAP storage in a development environment.
+
+In many environments, management of NetApp with Ansible is controlled by Red Hat Tower/AWX but I'd like to see if it's possible to extend the Kubernetes API to achieve a similar outcome and manage infrastructure external to K8s with an operator. Why you ask? Well why not!
+
+[quote, Ian Malcolm, Jurassic Park]   
+Your scientists were so preoccupied with whether they could, they didn't stop to think if they should.
+
+If you are unfamiliar with Kubernetes operators the links below do a great job at describing what they are and also how Ansible (via the SDK) can be leveraged to build one:
+
+* https://kubernetes.io/docs/concepts/extend-kubernetes/operator/
+* https://www.redhat.com/en/topics/containers/what-is-a-kubernetes-operator
+* https://www.ansible.com/blog/ansible-operator
+
+Over at https://netapp.io/[the pub] the NetApp developers and automation specialists continue to develop top class Ansible roles and modules to manage ONTAP storage, all made available as an https://galaxy.ansible.com/netapp/ontap[Ansible galaxy collection]. Given how mature the ONTAP Ansible collection is, the theory is that using the operator-sdk with the Ansible option and the collection should result in a simple to build yet super powerful operator to manage ONTAP.
+
+For the initial proof of concept, let's see if we can get the operator to perform three tasks:
+
+1. Create and remove storage virtual machines (SVMs).
+2. Create and remove volumes.
+3. Create and remove shares.
+
+== Getting Started
+
+First things first, I'll need to prepare my development environment.
+
+=== Operator SDK installation
+
+I use Pop!_OS on a Dell laptop at home and so start by following the https://sdk.operatorframework.io/docs/installation/["Install from GitHub release"] documentation to grab the operator-sdk binary. I follow the instructions step by step and once done validate that have the expected version of the operator-sdk:
+
+```bash
+❯ operator-sdk version
+operator-sdk version: "v1.16.0", commit: "560044140c4f3d88677e4ef2872931f5bb97f255", kubernetes version: "1.21", go version: "go1.16.13", GOOS: "linux", GOARCH: "amd64"
+```
+Good to go there.
+
+=== Kubernetes (Rancher Desktop)
+
+Next up, I'll need a Kubernetes environment to test the operator on. While I do have a Rancher RKE1 cluster running in my home lab, I have been meaning to check out Rancher Desktop's capabilities and this is a good excuse to do so. I'll install it following https://docs.rancherdesktop.io/installation/#installation-via-deb-package[the instructions on the Rancher Desktops website] and use a local K8s development instance moving forward. Once installed, I launch Rancher Desktop and am prompted with a couple options:
+
+image::welcome-to-rancher-desktop.png[]
+
+I'll stick with the defaults use containerd as my runtime and the latest version of Kubernetes available in Rancher Desktop.
+
+The https://docs.rancherdesktop.io/faq[FAQ] says I will find my configuration file in the default location (~/.kube/config). I'll quickly rename and add that file to my KUBECONFIG environment variable list:
+
+```bash
+# Rename the config file
+❯ mv ~/.kube/config ~/.kube/rancher-desktop.yml
+
+# Add the config file to my KUBECONFIG environment variable (I use zsh with oh-my-zsh:  https://github.com/ohmyzsh/ohmyzsh#custom-directory).
+❯ echo "export KUBECONFIG=$KUBECONFIG:$HOME/.kube/rancher-desktop.yml" >> $HOME/.oh-my-zsh/custom/config.zsh
+
+# Source the changes
+❯ source $HOME/.oh-my-zsh/custom/config.zsh
+
+# Validate I can see and use the new context
+❯ kcgc
+CURRENT   NAME              CLUSTER           AUTHINFO          NAMESPACE
+          rancher-desktop   rancher-desktop   rancher-desktop   
+*         rke1              rke1              rke1
+
+❯ kcuc rancher-desktop 
+Switched to context "rancher-desktop".
+
+❯ k get nodes         
+NAME                   STATUS   ROLES                  AGE   VERSION
+lima-rancher-desktop   Ready    control-plane,master   31m   v1.23.2+k3s1
+```
+
+Looking good! As an aside you'll notice a few command aliases in use there, there are available as part of the https://github.com/ohmyzsh/ohmyzsh/blob/master/plugins/kubectl/README.md[kubectl ohmyzsh plugin].
+
+=== ONTAP System
+Finally, we'll need the details of the ONTAP system. For this POC I'm using the NetApp ONTAP simulator to simulate a single node ONTAP system running in a VMware ESX environment. I'll keep the setup of the ONTAP simulator out of scope in this blog, but we can note down the following basic configuration:
+
+|=== 
+|Configuration Item |Value
+
+|ONTAP Version
+|9.9.1
+
+|Cluster IP Address
+|192.168.2.200
+
+|Node IP address
+|192.168.2.201
+
+|===
+
