@@ -1,13 +1,17 @@
 :toc: left
 :toclevels: 2
 :imagesdir: ../images
+:source-highlighter: highlightjs
 = Ansible ONTAP Operator
+
 
 == Overview
 
 The purpose of this blog post is to document how easy (or difficult as the case may be!) it is to build a proof of concept Kubernetes Ansible based operator with the Red Hat operator framework. My goal is to for the operator to manage NetApp ONTAP storage in a development environment.
 
-In many environments, management of NetApp with Ansible is controlled by Red Hat Tower/AWX but I'd like to see if it's possible to extend the Kubernetes API to achieve a similar outcome and manage infrastructure external to K8s with an operator. Why you ask? Well why not!
+In many environments, management of NetApp with Ansible is controlled by Red Hat Tower/AWX but I'd like to see if it's possible to extend the Kubernetes API to achieve a similar outcome and manage infrastructure external to K8s with an operator. Why you ask? Well why not! As Kubernetes adoption increases I'm interested to see if there will be trend to use the operator framework to manage infrastructure (external to K8s) as code and what that would look like.
+
+In the meanwhile...
 
 [quote, Ian Malcolm, Jurassic Park]   
 Your scientists were so preoccupied with whether they could, they didn't stop to think if they should.
@@ -20,11 +24,13 @@ If you are unfamiliar with Kubernetes operators the links below do a great job a
 
 Over at https://netapp.io/[the pub] the NetApp developers and automation specialists continue to develop top class Ansible roles and modules to manage ONTAP storage, all made available as an https://galaxy.ansible.com/netapp/ontap[Ansible galaxy collection]. Given how mature the ONTAP Ansible collection is, the theory is that using the operator-sdk with the Ansible option and the collection should result in a simple to build yet super powerful operator to manage ONTAP.
 
-For the initial proof of concept, let's see if we can get the operator to perform three tasks:
+For the initial proof of concept, let's see if we can have the operator to perform the following three tasks:
 
-1. Create and remove storage virtual machines (SVMs).
-2. Create and remove volumes.
-3. Create and remove shares.
+1. Create a storage virtual machine (SVM).
+2. Create a volume.
+3. Create an NFS export.
+
+We'll then attempt to mount the storage. I should also be able to remove any resources by deleting the objects in K8s.
 
 == Development Environment
 
@@ -74,7 +80,7 @@ lima-rancher-desktop   Ready    control-plane,master   31m   v1.23.2+k3s1
 Looking good! As an aside you'll notice a few command aliases in use there, there are available as part of the https://github.com/ohmyzsh/ohmyzsh/blob/master/plugins/kubectl/README.md[kubectl ohmyzsh plugin].
 
 === ONTAP System
-Finally, we'll need the details of the ONTAP system. For this POC I'm using the NetApp ONTAP simulator to simulate a single node ONTAP system running in a VMware ESX environment. I'll keep the setup of the ONTAP simulator out of scope in this blog to focus on the operator bits but we can note down the following basic configuration:
+Finally, we'll need the details of the ONTAP system. For this POC I'm using the NetApp ONTAP simulator to simulate a single node ONTAP system running in VMware Workstation. I'll keep the setup of the ONTAP simulator out of scope in this blog to focus on the operator bits but we can note down the following basic configuration:
 
 |=== 
 |Configuration Item |Value
@@ -82,11 +88,26 @@ Finally, we'll need the details of the ONTAP system. For this POC I'm using the 
 |ONTAP Version
 |9.9.1
 
+|Cluster Name
+|ontap-sim
+
+|Node Name
+|ontap-sim-01
+
 |Cluster IP Address
-|192.168.2.200
+|192.168.2.201
 
 |Node IP address
-|192.168.2.201
+|192.168.2.200
+
+|Data Aggregate
+|ontap_sim_01_FC_1
+
+|Username
+|admin
+
+|Password
+|Pa$$w0rd
 
 |===
 
@@ -96,7 +117,7 @@ With the development environment set up (I think  - we'll soon find out!), we sh
 
 === Scaffolding
 
-Let's create a new folder to store the operator code and initialize the project using the operatork-sdk binary by following along with the https://sdk.operatorframework.io/docs/building-operators/ansible/tutorial/[Ansible Operator Tutorial] documentation. I'm going to give this operator the very original name of "ontap-operator". I'll also use my domain "vaughanross.io" but this could be anything for the purposes of the POC.
+Let's create a new folder to store the operator code then initialize the project using the operatork-sdk binary by following along with the https://sdk.operatorframework.io/docs/building-operators/ansible/tutorial/[Ansible Operator Tutorial] documentation. I'm going to give this operator the very original name of "ontap-operator". I'll also use my domain "vaughanross.io" but this could be anything for the purposes of the POC.
 
 ```bash
 ❯ mkdir ontap-operator 
@@ -109,7 +130,7 @@ $ operator-sdk create api
 
 That was easy. Using VSCode or running 'tree' in the terminal I can see the SDK has generated 16 new directories and 45 files. 
 
-Next, we'll extend the Kubernetes API by creating custom resource definitions (CRDs). Considering the scope of the POC is to manage SVM's, Volumes and Shares, it's reasonable to create a CRD for each type under the 'ontap' group.
+Next, we'll generate custom resource definitions (CRDs) to extend the Kubernetes API. Considering the scope of the POC is to manage SVM's, Volumes and Shares, it's reasonable to create a CRD for each type and group them under the name 'ontap'.
 
 ```bash
 ❯ operator-sdk create api --group ontap --version v1alpha1 --kind StorageVirtualMachine --generate-role
@@ -151,7 +172,7 @@ roles
     └── vars
 ```
 
-Next, let's review some of the files in the root of the project folder and update them as required.
+Next, let's review some of the files in the root of the project folder and update them if required.
 
 ```bash
 ❯ cat Dockerfile    
@@ -279,7 +300,7 @@ No errors and we can see from the build logs the controller has installed the on
 
 === Operator Deployment
 
-With the image pushed to the registry, let's try deploy the operator as is to Kubernetes.
+With the image pushed to the registry, let's try deploy the operator 'as is' to Kubernetes.
 
 ```bash
 ❯ make deploy VERSION=0.0.1                  
@@ -303,11 +324,135 @@ deployment.apps/ontap-operator-controller-manager created
 ```
 That's a fair bit. Reviewing the list we see the Makefile deploy target has kustomized and deployed all resources, including the namespace "ontap-operator-system", the custom resource definitions, the RBAC serviceaccounts, roles, rolebindings and finally the deployment along with a configmap. 
 
-Let's ensure the deployment is running.
+Let's ensure the deployment is running and verify the image versions.
 
 ```bash
 ❯ k get deployment -n ontap-operator-system
 NAME                                READY   UP-TO-DATE   AVAILABLE   AGE
 ontap-operator-controller-manager   1/1     1            1           5m44s
+
+❯ kubectl get pods --namespace ontap-operator-system --output=custom-columns="NAME:.metadata.name,IMAGE:.spec.containers[*].image" 
+NAME                                                IMAGE
+ontap-operator-controller-manager-c4f457795-454vb   gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0,vaughanross/ontap-operator:0.0.1
 ```
 
+Great. From here on out as I make changes I'll be incrementing the operator using the above workflow but, not pasting the output in this blog.
+
+=== Role Configuration
+
+This is where the rubber hits the road. We've successfully built and deployed our operator, created the CRD's and have the controller watching them for changes. We now need to configure the roles to tell the operator what to do.
+
+==== Storage Virtual Machine
+
+We'll start by modifying the Storage Virtual Machine role using the https://docs.ansible.com/ansible/latest/collections/netapp/ontap/na_ontap_svm_module.html[netapp.ontap.na_ontap_svm module] documentation as a guide.
+
+```yaml
+---
+# defaults file for StorageVirtualMachine
+validate_certs: no
+```
+```yaml
+---
+# tasks file for StorageVirtualMachine
+- name: Create SVM
+  netapp.ontap.na_ontap_svm:
+    state: "{{ state }}"
+    name: "{{ svm_name }}"
+    services:
+      cifs:
+        allowed: "{{ cifs_allowed }}"
+      fcp:
+        allowed: "{{ fcp_allowed }}"
+      nfs:
+        allowed: "{{ nfs_allowed }}"
+        enabled: "{{ nfs_enabled }}"
+    hostname: "{{ netapp_hostname }}"
+    username: "{{ netapp_username }}"
+    password: "{{ netapp_password }}"
+    https: "{{ https_enabled }}"
+    validate_certs: "{{ validate_certs }}"
+```
+That's it. Now it should be as simple as creating an object of the Kind "StorageVirtualMachine". The SDK has generated a template for us to use under config/samples/ontap_v1alpha1_storagevirtualmachine.yaml
+
+```yaml
+apiVersion: ontap.vaughanross.io/v1alpha1
+kind: StorageVirtualMachine
+metadata:
+  name: storagevirtualmachine-sample
+spec:
+  # TODO(user): Add fields here
+```
+Each item under 'spec' becomes a variable that's passed to the operator and used in the playbook, so I've read the role documentation to determine what variable are required and edit my sample to create my first SVM. I call it 'nfs-svm' and have it serve NFS over the IP address 192.168.2.205.
+
+```yaml
+apiVersion: ontap.vaughanross.io/v1alpha1
+kind: StorageVirtualMachine
+metadata:
+  name: nfs-svm
+spec:
+  state: present
+  svm_name: nfs-svm
+  cifs_allowed: false
+  fcp_allowed: false
+  nfs_allowed: true
+  nfs_enabled: true
+  netapp_hostname: 192.168.2.201
+  netapp_username: admin
+  netapp_password: Pa$$w0rd
+  https_enabled: true
+  validate_certs: no
+```
+
+Let's give it a try.
+
+```console
+❯ kubectl apply -f ontap-operator/config/samples/ontap_v1alpha1_storagevirtualmachine.yaml
+storagevirtualmachine.ontap.vaughanross.io/nfs-svm created
+
+❯ kubectl get storagevirtualmachines.ontap.vaughanross.io 
+NAME          AGE
+nfs-svm   76s
+
+❯ kubectl describe storagevirtualmachines.ontap.vaughanross.io  nfs-svm
+(truncated output)
+    Ansible Result:
+      Changed:             1
+      Completion:          2022-01-28T05:10:27.619999
+      Failures:            0
+      Ok:                  1
+      Skipped:             0
+    Last Transition Time:  2022-01-28T05:10:12Z
+    Message:               Awaiting next reconciliation
+    Reason:                Successful
+    Status:                True
+    Type:                  Running
+    Last Transition Time:  2022-01-28T05:10:27Z
+    Message:               Last reconciliation succeeded
+    Reason:                Successful
+    Status:                True
+    Type:                  Successful
+    Last Transition Time:  2022-01-28T05:08:59Z
+    Message:               
+    Reason:                
+    Status:                False
+    Type:                  Failure
+```
+
+That is very cool. Another way to validate Ansible has run is by checking the operator logs
+
+```console
+❯ k logs -n ontap-operator-system ontap-operator-controller-manager-7cd878d9c6-df9rc
+--------------------------- Ansible Task StdOut -------------------------------
+
+TASK [storagevirtualmachine : Create SVM] **************************************
+task path: /opt/ansible/roles/storagevirtualmachine/tasks/main.yml:3
+
+-------------------------------------------------------------------------------
+{"level":"info","ts":1643346627.8149536,"logger":"runner","msg":"Ansible-runner exited successfully","job":"3128614846260928290","name":"nfs-svm","namespace":"default"}
+
+----- Ansible Task Status Event StdOut (ontap.vaughanross.io/v1alpha1, Kind=StorageVirtualMachine, nfs-svm/default) -----
+
+
+PLAY RECAP *********************************************************************
+localhost                  : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+```
