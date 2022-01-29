@@ -1,0 +1,803 @@
+:toc: left
+:toclevels: 3
+:imagesdir: ../images
+:source-highlighter: highlightjs
+= ONTAP Operator
+
+
+== Overview
+
+This blog post aims to build a proof of concept Kubernetes Ansible based operator using the Red Hat operator framework. Aside from a bit of reading and some basic testing, I have minimal previous experience with the SDK, so this page will be a step by step walkthrough, including any mistakes I make along the way.
+
+Operators are usually used to manage resources within a Kubernetes cluster. The goal is to see if I can create one to control an external NetApp ONTAP storage system for development purposes. The primary motivation is to understand how the SDK works and how easy (or challenging) it is to use.
+
+If you are unfamiliar with Kubernetes operators, the links below do a great job at describing what they are and also how we can leverage ansible (via the SDK) to build one:
+
+* https://kubernetes.io/docs/concepts/extend-kubernetes/operator/
+* https://www.redhat.com/en/topics/containers/what-is-a-kubernetes-operator
+* https://www.ansible.com/blog/ansible-operator
+
+Over at https://netapp.io/[the pub], the NetApp developers and automation specialists continue to develop top-class Ansible roles and modules to manage ONTAP storage, all made available as an https://galaxy.ansible.com/netapp/ontap[Ansible galaxy collection]. Given how mature the ONTAP Ansible collection is, the theory is that using the operator-sdk with the Ansible option should result in a simple build yet powerful operator to manage ONTAP.
+
+For the initial proof of concept, let's see if we can have the operator perform the following two tasks:
+
+1. Create a Storage Virtual Machine (SVM).
+2. Create a volume in the SVM.
+
+I should also remove the above resources by deleting the objects in K8s.
+
+Alright, let's get going.
+
+== Development Environment
+
+First, I'll need to prepare my development environment.
+
+=== Operator SDK installation
+
+I use Pop!_OS on a Dell laptop at home and so start by following the https://sdk.operatorframework.io/docs/installation/["Install from GitHub release"] documentation to grab the operator-sdk binary. Then, I follow the instructions step by step and, once done, validate that I have the expected version of the operator-sdk:
+
+```bash
+❯ operator-sdk version
+operator-sdk version: "v1.16.0", commit: "560044140c4f3d88677e4ef2872931f5bb97f255", kubernetes version: "1.21", go version: "go1.16.13", GOOS: "linux", GOARCH: "amd64"
+```
+Good to go there.
+
+=== Kubernetes (Rancher Desktop)
+
+Next up, I'll need a Kubernetes environment to use with the operator. I'm a Rancher fan and will install Rancher Desktop by following https://docs.rancherdesktop.io/installation/#installation-via-deb-package[the instructions on the Rancher Desktops website] to use a local K8s development instance moving forward. Once installed, I launch Rancher Desktop and see a couple of options:
+
+image::ansible-ontap-operator_welcome-to-rancher-desktop.png[]
+
+I'll stick with the defaults use containerd as my runtime and the latest version of Kubernetes available in Rancher Desktop.
+
+The https://docs.rancherdesktop.io/faq[FAQ] says I will find my configuration file in the default location (~/.kube/config). I do have a seperate config file for my RKE1 cluster so add that file to my KUBECONFIG environment variable list:
+
+```bash
+# I use zsh with oh-my-zsh so add the below line to $HOME/.oh-my-zsh/custom/config.zsh:
+export KUBECONFIG='$KUBECONFIG:$HOME/.kube/config'
+
+# Source the changes
+❯ source $HOME/.oh-my-zsh/custom/config.zsh
+
+# Validate I can see and use the new context
+❯ kubectl config get-contexts
+CURRENT   NAME              CLUSTER           AUTHINFO          NAMESPACE
+          rancher-desktop   rancher-desktop   rancher-desktop   
+*         rke1              rke1              rke1
+
+# Swap to the new context
+❯ kubectl config use-context rancher-desktop
+Switched to context "rancher-desktop".
+
+# Test the API
+❯ kubectl get nodes         
+NAME                   STATUS   ROLES                  AGE   VERSION
+lima-rancher-desktop   Ready    control-plane,master   31m   v1.23.2+k3s1
+```
+
+Looking good!
+
+=== ONTAP
+
+Finally, we'll need the details of the ONTAP system. I'm using the NetApp ONTAP simulator to simulate a single node ONTAP system running in VMware Workstation for this POC. I'll keep the setup of the ONTAP simulator out of scope in this blog to focus on the operator bits, but we can note down the following basic "out of the box" configuration:
+
+|=== 
+|Configuration Item |Value
+
+|ONTAP Version
+|9.9.1
+
+|Cluster Name
+|ontap-sim
+
+|Node Name
+|ontap-sim-01
+
+|Cluster IP Address
+|192.168.2.201
+
+|Node IP address
+|192.168.2.200
+
+|Data Aggregate
+|ontap_sim_01_FC_1
+
+|Username
+|admin
+
+|Password
+|Pa$$w0rd
+
+|===
+
+== Building The Operator
+
+We should be ready to rock and roll with the development environment prepared.
+
+=== Scaffolding With The SDK
+
+Let's create a new folder to store the operator code, then initialize the project using the operator-sdk binary by following along with the https://sdk.operatorframework.io/docs/building-operators/ansible/tutorial/[Ansible Operator Tutorial] documentation. 
+
+I will give this operator the very original name of "ontap-operator". I'll also use my domain "vaughanross.io" for the POC.
+
+```bash
+❯ mkdir ontap-operator 
+❯ cd ontap-operator
+❯ operator-sdk init --plugins ansible --domain vaughanross.io
+Writing kustomize manifests for you to edit...
+Next: define a resource with:
+$ operator-sdk create api
+```
+
+That was easy. Using VSCode or running 'tree' in the terminal, I can see the SDK has generated 16 new directories and 45 files.
+
+Next, we'll generate custom resource definitions (CRDs) to extend the Kubernetes API. Considering the scope of the POC is to manage SVM's and Volumes, it's reasonable to create a CRD for each type and group them using the name 'ontap'.
+
+```bash
+❯ operator-sdk create api --group ontap --version v1alpha1 --kind StorageVirtualMachine --generate-role
+Writing kustomize manifests for you to edit...
+❯ operator-sdk create api --group ontap --version v1alpha1 --kind Volume --generate-role
+Writing kustomize manifests for you to edit...
+```
+
+Using the tree util, I can see the SDK has created a role with the usual Ansible directory structure for each type under the roles folder. Very cool.
+
+```bash
+❯ tree roles -d    
+roles
+├── storagevirtualmachine
+│   ├── defaults
+│   ├── files
+│   ├── handlers
+│   ├── meta
+│   ├── tasks
+│   ├── templates
+│   └── vars
+└── volume
+    ├── defaults
+    ├── files
+    ├── handlers
+    ├── meta
+    ├── tasks
+    ├── templates
+    └── vars
+```
+
+Next, let's review some of the files in the root of the project folder and update them if required.
+
+```bash
+❯ cat Dockerfile    
+FROM quay.io/operator-framework/ansible-operator:v1.16.0
+
+COPY requirements.yml ${HOME}/requirements.yml
+RUN ansible-galaxy collection install -r ${HOME}/requirements.yml \
+ && chmod -R ug+rwx ${HOME}/.ansible
+
+COPY watches.yaml ${HOME}/watches.yaml
+COPY roles/ ${HOME}/roles/
+COPY playbooks/ ${HOME}/playbooks/
+```
+
+We can see the Dockerfile will install any collections found in the requirements.yml file. It also copies the watches.yaml file along with the roles and playbooks folder into the container. Fair enough! We know we'll need the ontap collection from Ansible galaxy, so let's add it to the requirements.yml file:
+
+```yaml
+---
+collections:
+  - name: community.kubernetes
+    version: "1.2.1"
+  - name: operator_sdk.util
+    version: "0.3.1"
+  - name: kubernetes.core
+    version: "2.2.0"
+#  My addition is below this line.
+  - name: netapp.ontap
+    version: "21.15.1"
+```
+
+Finally, let's review the watches.yaml file.
+
+```bash
+cat watches.yaml
+---
+# Use the 'create api' subcommand to add watches to this file.
+- version: v1alpha1
+  group: ontap.vaughanross.io
+  kind: StorageVirtualMachine
+  role: storagevirtualmachine
+- version: v1alpha1
+  group: ontap.vaughanross.io
+  kind: Volume
+  role: volume
+#+kubebuilder:scaffold:watch
+```
+This file tells the operator to watch each CRD created earlier and run the corresponding role when changes are detected. We will most likely need to come back and fine-tune this later.
+
+I'm confident we have the scaffolding in place at this stage, and although it's not functional, I'd like to test the build, test, and deployment pipeline. Fortunately, the SDK generated a Makefile with convenient preconfigured targets.
+
+=== Container Image Creation
+
+I've created a public repository "vaughanross/ontap-operator" on DockerHub to store the operator image and make the following adjustments to the Makefile:
+
+```git
+-IMAGE_TAG_BASE ?= vaughanross.io/ontap-operator
++IMAGE_TAG_BASE ?= vaughanross/ontap-operator
+
+-IMG ?= controller:latest
++IMG ?= $(IMAGE_TAG_BASE):$(VERSION)
+
+```
+
+I've run docker auth to authenticate to the repository and so should now be able to build and push the container image using the Makefile:
+
+```bash
+❯ make docker-build docker-push VERSION=0.0.1
+docker build -t vaughanross/ontap-operator:0.0.1 .
+Sending build context to Docker daemon  34.18MB
+Step 1/6 : FROM quay.io/operator-framework/ansible-operator:v1.16.0
+v1.16.0: Pulling from operator-framework/ansible-operator
+26f1167feaf7: Pull complete 
+adffa6963146: Pull complete 
+34392db44a7a: Pull complete 
+f87d97c96420: Pull complete 
+45ceea710a34: Pull complete 
+d80aabd8d47a: Pull complete 
+ba4214f4154e: Pull complete 
+d349a89ada27: Pull complete 
+Digest: sha256:df76f066bc267be1d73a701b6791abcb4646b3d31c70ba31b2fca778a8bc99de
+Status: Downloaded newer image for quay.io/operator-framework/ansible-operator:v1.16.0
+ ---> 352cac8432b5
+Step 2/6 : COPY requirements.yml ${HOME}/requirements.yml
+ ---> bde47aec3a17
+Step 3/6 : RUN ansible-galaxy collection install -r ${HOME}/requirements.yml  && chmod -R ug+rwx ${HOME}/.ansible
+ ---> Running in 2e18b6ad0a60
+Process install dependency map
+Starting collection install process
+Installing 'community.kubernetes:1.2.1' to '/opt/ansible/.ansible/collections/ansible_collections/community/kubernetes'
+Installing 'operator_sdk.util:0.3.1' to '/opt/ansible/.ansible/collections/ansible_collections/operator_sdk/util'
+Installing 'kubernetes.core:2.2.0' to '/opt/ansible/.ansible/collections/ansible_collections/kubernetes/core'
+Installing 'netapp.ontap:21.15.1' to '/opt/ansible/.ansible/collections/ansible_collections/netapp/ontap'
+Removing intermediate container 2e18b6ad0a60
+ ---> 30c9915c8081
+Step 4/6 : COPY watches.yaml ${HOME}/watches.yaml
+ ---> a4b20b3df0af
+Step 5/6 : COPY roles/ ${HOME}/roles/
+ ---> 9a26e1daefd0
+Step 6/6 : COPY playbooks/ ${HOME}/playbooks/
+ ---> e03cac920462
+Successfully built e03cac920462
+Successfully tagged vaughanross/ontap-operator:0.0.1
+docker push vaughanross/ontap-operator:0.0.1
+The push refers to repository [docker.io/vaughanross/ontap-operator]
+7360d40299aa: Pushed 
+f3eaeb4ecc8b: Pushed 
+e0795cc39e1e: Pushed 
+fe37890326dd: Pushed 
+f85b884a7c0b: Pushed 
+a6ee3241e4b6: Pushed 
+40a9bab6edf7: Pushed 
+67235be480de: Pushed 
+c1ec8952b903: Pushed 
+7bb5fcd3789d: Pushed 
+e3313ed16678: Pushed 
+3ba8c926eef9: Pushed 
+352ba846236b: Pushed 
+0.0.1: digest: sha256:4f1d34aa235a9630f3fbd9215fb04a3161d1444f35778311457d2843f0311de5 size: 3033
+```
+We can see no errors from the build logs and that the controller has installed the ontap collection.
+
+=== Operator Deployment
+
+With the image pushed to the registry, let's try to deploy the operator to Kubernetes:
+
+```bash
+❯ make deploy VERSION=0.0.1                  
+cd config/manager && /home/vaughan/code/vaughanross/ontap-operator/bin/kustomize edit set image controller=vaughanross/ontap-operator:0.0.1
+/home/vaughan/code/vaughanross/ontap-operator/bin/kustomize build config/default | kubectl apply -f -
+namespace/ontap-operator-system created
+customresourcedefinition.apiextensions.k8s.io/shares.ontap.vaughanross.io created
+customresourcedefinition.apiextensions.k8s.io/storagevirtualmachines.ontap.vaughanross.io created
+customresourcedefinition.apiextensions.k8s.io/volumes.ontap.vaughanross.io created
+serviceaccount/ontap-operator-controller-manager created
+role.rbac.authorization.k8s.io/ontap-operator-leader-election-role created
+clusterrole.rbac.authorization.k8s.io/ontap-operator-manager-role created
+clusterrole.rbac.authorization.k8s.io/ontap-operator-metrics-reader created
+clusterrole.rbac.authorization.k8s.io/ontap-operator-proxy-role created
+rolebinding.rbac.authorization.k8s.io/ontap-operator-leader-election-rolebinding created
+clusterrolebinding.rbac.authorization.k8s.io/ontap-operator-manager-rolebinding created
+clusterrolebinding.rbac.authorization.k8s.io/ontap-operator-proxy-rolebinding created
+configmap/ontap-operator-manager-config created
+service/ontap-operator-controller-manager-metrics-service created
+deployment.apps/ontap-operator-controller-manager created
+```
+That's a fair bit. Reviewing the list, we see the Makefile deploy target has "kustomized" and deployed all resources, including;
+
+* The namespace "ontap-operator-system"
+* The custom resource definitions
+* The RBAC serviceaccounts, roles, rolebindings
+* The operator deployment along with a configmap
+
+Let's ensure the deployment is running and verify the image versions:
+
+```bash
+❯ kubectl get deployment -n ontap-operator-system
+NAME                                READY   UP-TO-DATE   AVAILABLE   AGE
+ontap-operator-controller-manager   1/1     1            1           5m44s
+
+❯ kubectl get pods --namespace ontap-operator-system --output=custom-columns="NAME:.metadata.name,IMAGE:.spec.containers[*].image" 
+NAME                                                IMAGE
+ontap-operator-controller-manager-c4f457795-454vb   gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0,vaughanross/ontap-operator:0.0.1
+```
+
+Great. Note that as I make changes to the operator from here on out, I'll be incrementing the version using the above workflow but not pasting the output in this blog.
+
+=== Role Configuration
+
+Now the rubber hits the road. We've successfully built and deployed our operator, created the CRD's and have the controller watching them for changes. We now need to configure the roles to tell the operator what to do.
+
+==== Storage Virtual Machine
+
+We'll need an SVM before creating a volume, so start by modifying the Storage Virtual Machine role using the https://docs.ansible.com/ansible/latest/collections/netapp/ontap/na_ontap_svm_module.html[netapp.ontap.na_ontap_svm module] documentation as a guide. 
+
+I'll add the below content to the defaults and tasks main.yml files:
+
+```yaml
+---
+# defaults file for StorageVirtualMachine
+validate_certs: no
+```
+```yaml
+---
+# tasks file for StorageVirtualMachine
+- name: Create SVM
+  netapp.ontap.na_ontap_svm:
+    state: "{{ state }}"
+    name: "{{ svm_name }}"
+    services:
+      cifs:
+        allowed: "{{ cifs_allowed }}"
+      fcp:
+        allowed: "{{ fcp_allowed }}"
+      nfs:
+        allowed: "{{ nfs_allowed }}"
+        enabled: "{{ nfs_enabled }}"
+    hostname: "{{ netapp_hostname }}"
+    username: "{{ netapp_username }}"
+    password: "{{ netapp_password }}"
+    https: "{{ https_enabled }}"
+    validate_certs: "{{ validate_certs }}"
+```
+That's all there is to it. After another build, push and deploy, we can create an object in Kubernetes of the kind "StorageVirtualMachine". The SDK has generated a handy template for us to use under config/samples/ontap_v1alpha1_storagevirtualmachine.yaml:
+
+```yaml
+apiVersion: ontap.vaughanross.io/v1alpha1
+kind: StorageVirtualMachine
+metadata:
+  name: storagevirtualmachine-sample
+spec:
+  # TODO(user): Add fields here
+```
+Note that each item under 'spec' becomes a variable passed to the operator and used in the playbook. Reviewing the na_ontap_svm_module documentation, I edit the file to create an SVM called 'nfs-svm' to serve NFS over IP address 192.168.2.205:
+
+```yaml
+apiVersion: ontap.vaughanross.io/v1alpha1
+kind: StorageVirtualMachine
+metadata:
+  name: nfs-svm
+spec:
+  state: present
+  svm_name: nfs-svm
+  cifs_allowed: false
+  fcp_allowed: false
+  nfs_allowed: true
+  nfs_enabled: true
+  netapp_hostname: 192.168.2.201
+  netapp_username: admin
+  netapp_password: Pa$$w0rd
+  https_enabled: true
+  validate_certs: no
+```
+
+Let's give it a try:
+
+```console
+❯ kubectl apply -f ontap-operator/config/samples/ontap_v1alpha1_storagevirtualmachine.yaml
+storagevirtualmachine.ontap.vaughanross.io/nfs-svm created
+
+❯ kubectl get storagevirtualmachines.ontap.vaughanross.io 
+NAME          AGE
+nfs-svm   76s
+
+❯ kubectl describe storagevirtualmachines.ontap.vaughanross.io  nfs-svm
+(truncated output)
+    Ansible Result:
+      Changed:             1
+      Completion:          2022-01-28T05:10:27.619999
+      Failures:            0
+      Ok:                  1
+      Skipped:             0
+    Last Transition Time:  2022-01-28T05:10:12Z
+    Message:               Awaiting next reconciliation
+    Reason:                Successful
+    Status:                True
+    Type:                  Running
+    Last Transition Time:  2022-01-28T05:10:27Z
+    Message:               Last reconciliation succeeded
+    Reason:                Successful
+    Status:                True
+    Type:                  Successful
+    Last Transition Time:  2022-01-28T05:08:59Z
+    Message:               
+    Reason:                
+    Status:                False
+    Type:                  Failure
+```
+That actually worked! :)
+
+Another way to perform validation is to check the operator logs:
+
+```console
+❯ kubectl logs -n ontap-operator-system ontap-operator-controller-manager-7cd878d9c6-df9rc
+--------------------------- Ansible Task StdOut -------------------------------
+
+TASK [storagevirtualmachine : Create SVM] **************************************
+task path: /opt/ansible/roles/storagevirtualmachine/tasks/main.yml:3
+
+-------------------------------------------------------------------------------
+{"level":"info","ts":1643346627.8149536,"logger":"runner","msg":"Ansible-runner exited successfully","job":"3128614846260928290","name":"nfs-svm","namespace":"default"}
+
+----- Ansible Task Status Event StdOut (ontap.vaughanross.io/v1alpha1, Kind=StorageVirtualMachine, nfs-svm/default) -----
+
+
+PLAY RECAP *********************************************************************
+localhost                  : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+```
+I can also see the SVM in ONTAP System Manager:
+
+image::ansible-ontap-operator_nfs-svm.png[]
+
+How cool is that!?
+
+Let's see what happens when we try to remove the SVM:
+
+```bash
+❯ kubectl delete -f ./config/samples/ontap_v1alpha1_storagevirtualmachine.yaml
+storagevirtualmachine.ontap.vaughanross.io "nfs-svm" deleted
+
+❯ kubectl get storagevirtualmachines.ontap.vaughanross.io -A
+No resources found
+```
+The custom resource no longer exists, and yet the SVM is still present (using the ONTAP CLI for validation):
+
+```bash
+ontap-sim::> vserver show
+                               Admin      Operational Root
+Vserver     Type    Subtype    State      State       Volume     Aggregate
+----------- ------- ---------- ---------- ----------- ---------- ----------
+nfs-svm     data    default    running    running     nfs_svm_   ontap_sim_
+                                                      root       01_FC_1
+ontap-sim   admin   -          -          -           -          -
+ontap-sim-01 
+            node    -          -          -           -          -
+```
+
+In our watches.yml file, we instruct the operator to run the storagevirtualmachine role each time we change a storagevirtualmachine custom resource. All that's happened behind the scenes is that the role has been rerun. Fortunately, we can fix this with https://sdk.operatorframework.io/docs/building-operators/ansible/reference/finalizers/[finalizers].
+
+I'll add the below configuration to the watches.yaml file:
+
+```yaml
+- version: v1alpha1
+  group: ontap.vaughanross.io
+  kind: StorageVirtualMachine
+  role: storagevirtualmachine
+# New finalizer configuration added below
+  finalizer:
+    name: ontap.vaughanross.io/finalizer
+    vars:
+      state: absent
+```
+Now I'll recreate and then try to remove the SVM:
+
+```bash
+❯ kubectl apply -f ./config/samples/ontap_v1alpha1_storagevirtualmachine.yaml 
+storagevirtualmachine.ontap.vaughanross.io/nfs-svm created
+
+❯ kubectl delete -f ./config/samples/ontap_v1alpha1_storagevirtualmachine.yaml
+storagevirtualmachine.ontap.vaughanross.io "nfs-svm" deleted
+
+❯ ssh admin@192.168.2.201
+ontap-sim::> vserver show
+                               Admin      Operational Root
+Vserver     Type    Subtype    State      State       Volume     Aggregate
+----------- ------- ---------- ---------- ----------- ---------- ----------
+ontap-sim   admin   -          -          -           -          -
+ontap-sim-01 
+            node    -          -          -           -          -
+2 entries were displayed.
+```
+Excellent. Ansible has removed the SVM.
+
+==== Using Kubernetes Secrets
+
+At this point, we have an established pattern to apply to our Volume role, but before we go any further, I'd like to ensure we remove that clear text cluster password in the specification.
+
+A quick Google on the topic led me to this existing https://github.com/operator-framework/operator-sdk/issues/2510[issue 2510] in the operator-sdk repo. So, in summary, we can add a secret to the operator deployment.
+
+Let's create a secret for the credentials:
+
+```bash
+❯ kubectl create secret generic ontap-credentials --namespace ontap-operator-system --from-literal netapp_username='admin' --from-literal netapp_password='Pa$$w0rd'
+secret/ontap-credentials created
+```
+We can add the https://kubernetes.io/docs/concepts/configuration/secret/[Kubernetes secret] as usual to the container named 'manager' by editing controller-manager deployment found in config/manager/manager.yaml. So let's add it as a volume and have Ansible look up the credentials when the playbook runs:
+
+```yaml
+# (truncated)
+    spec:
+        name: manager
+        # (truncated)
+        volumeMounts:
+        - name: ontap-credentials
+          mountPath: "/etc/ontap-credentials"
+      volumes:
+      - name: ontap-credentials
+        secret:
+          secretName: ontap-credentials
+# (truncated)
+```
+We can then modify the storagevirtualmachine/tasks/main.yml file as follows:
+
+```git
+    - username: "{{ netapp_username }}"
+    + username: "{{ lookup('file', '/etc/ontap-credentials/netapp_username') }}"
+    - password: "{{ netapp_password }}"
+    + password: "{{ lookup('file', '/etc/ontap-credentials/netapp_password') }}"
+
+```
+
+Finally, let's remove the credentials from config/samples/ontap_v1alpha1_storagevirtualmachine.yaml:
+
+```yaml
+apiVersion: ontap.vaughanross.io/v1alpha1
+kind: StorageVirtualMachine
+metadata:
+  name: nfs-svm
+spec:
+  state: present
+  svm_name: nfs-svm
+  cifs_allowed: false
+  fcp_allowed: false
+  nfs_allowed: true
+  nfs_enabled: true
+  netapp_hostname: 192.168.2.201
+  https_enabled: true
+  validate_certs: no
+```
+
+After another build, push and deploy, let's recreate and inspect the custom resource:
+
+```bash
+❯ kubectl apply -f ./config/samples/ontap_v1alpha1_storagevirtualmachine.yaml 
+storagevirtualmachine.ontap.vaughanross.io/nfs-svm created
+
+❯ kubectl describe storagevirtualmachines.ontap.vaughanross.io nfs-svm 
+
+# (truncated)
+Spec:
+  cifs_allowed:     false
+  fcp_allowed:      false
+  https_enabled:    true
+  netapp_hostname:  192.168.2.201
+  nfs_allowed:      true
+  nfs_enabled:      true
+  State:            present
+  svm_name:         nfs-svm
+  validate_certs:   false
+# (truncated)
+```
+I see no credentials there. That's way better, and I feel confident moving forward with the Volume role.
+
+==== Volumes
+
+We take all the learning from our storagevirtualmachine role and use the same pattern to create a volume, following the https://docs.ansible.com/ansible/latest/collections/netapp/ontap/na_ontap_volume_module.html[na_ontap_volume_module documentation.] to modify the defaults and tasks main.yml files:
+
+```yaml
+---
+# defaults file for Volume
+validate_certs: no
+```
+
+```yaml
+---
+# tasks file for Volume
+- name: Create FlexVol
+  na_ontap_volume:
+    state: "{{ state }}"
+    name: "{{ vol_name }}"
+    aggregate_name: "{{ aggr_name }}"
+    size: "{{ size }}"
+    size_unit: "{{ size_unit }}"
+    space_guarantee: "{{ space_guarantee }}"
+    policy: "{{ policy }}"
+    vserver: "{{ vserver }}"
+    wait_for_completion: True
+    hostname: "{{ netapp_hostname }}"
+    username: "{{ lookup('file', '/etc/ontap-credentials/netapp_username') }}"
+    password: "{{ lookup('file', '/etc/ontap-credentials/netapp_password') }}"
+    https: "{{ https_enabled }}"
+    validate_certs: "{{ validate_certs }}"
+```
+
+We then create a volume with the following specification:
+
+```yaml
+# ontap-operator/config/samples/ontap_v1alpha1_volume.yaml
+apiVersion: ontap.vaughanross.io/v1alpha1
+kind: Volume
+metadata:
+  name: volume01
+spec:
+  state: present
+  vol_name: volume01
+  aggr_name: ontap_sim_01_FC_1
+  size: 2
+  size_unit: gb
+  space_guarantee: none
+  policy: default
+  vserver: nfs-svm
+  netapp_hostname: 192.168.2.201
+  https_enabled: true
+  validate_certs: no
+```
+
+And whoops, I've finally hit an error!
+
+```bash
+❯ kubectl apply -f ./config/samples/ontap_v1alpha1_volume.yaml 
+volume.ontap.vaughanross.io/volume01 created
+
+❯ kubectl describe volumes.ontap.vaughanross.io volume01       
+Name:         volume01
+# (truncated)
+Status:
+  Conditions:
+    Last Transition Time:  2022-01-29T05:48:40Z
+    Message:               
+    Reason:                
+    Status:                False
+    Type:                  Successful
+    Ansible Result:
+      Changed:             0
+      Completion:          2022-01-29T05:48:55.413327
+      Failures:            1
+      Ok:                  0
+      Skipped:             0
+    Last Transition Time:  2022-01-29T05:48:55Z
+    Message:               the python NetApp-Lib module is required
+    Reason:                Failed
+    Status:                False
+    Type:                  Failure
+    Last Transition Time:  2022-01-29T05:48:55Z
+    Message:               Running reconciliation
+    Reason:                Running
+    Status:                True
+    Type:                  Running
+Events:                    <none>
+```
+
+As per the Message above and the Ansible documentation, we need the python NetApp-Lib module installed. I appreciate that we don't need to go sifting through the Ansible playbook logs and quickly see what's wrong in that status message.
+
+I'll do two things:
+
+1. Create a new module_requirements.yml file listing the required pip module.
+2. Modify the Dockerfile to copy in the file and install the module.
+
+```yaml
+# module_requirements.yml
+NetApp-Lib>=2020.3.12
+```
+
+```bash
+# Dockerfile
+FROM quay.io/operator-framework/ansible-operator:v1.16.0
+
+COPY requirements.yml ${HOME}/requirements.yml
+COPY module_requirements.yml ${HOME}/module_requirements.yml # New line
+RUN ansible-galaxy collection install -r ${HOME}/requirements.yml \
+ && pip install -r module_requirements.yml \ # New line
+ && chmod -R ug+rwx ${HOME}/.ansible
+
+COPY watches.yaml ${HOME}/watches.yaml
+COPY roles/ ${HOME}/roles/
+COPY playbooks/ ${HOME}/playbooks/
+```
+
+```bash
+❯ kubectl apply -f ./config/samples/ontap_v1alpha1_volume.yaml 
+volume.ontap.vaughanross.io/volume01 created
+
+❯ kubectl describe volumes.ontap.vaughanross.io volume01      
+Name:         volume01
+# (truncated)
+Status:
+  Conditions:
+    Ansible Result:
+      Changed:             1
+      Completion:          2022-01-29T06:50:16.503675
+      Failures:            0
+      Ok:                  1
+      Skipped:             0
+    Last Transition Time:  2022-01-29T06:50:12Z
+    Message:               Awaiting next reconciliation
+    Reason:                Successful
+    Status:                True
+    Type:                  Running
+    Last Transition Time:  2022-01-29T06:50:16Z
+    Message:               Last reconciliation succeeded
+    Reason:                Successful
+    Status:                True
+    Type:                  Successful
+    Last Transition Time:  2022-01-29T06:50:16Z
+    Message:               
+    Reason:                
+    Status:                False
+    Type:                  Failure
+Events:                    <none>
+
+❯ ssh admin@192.168.2.201
+ontap-sim::> volume show -vserver nfs-svm 
+Vserver   Volume       Aggregate    State      Type       Size  Available Used%
+--------- ------------ ------------ ---------- ---- ---------- ---------- -----
+nfs-svm   nfs_svm_root ontap_sim_01_FC_1 
+                                    online     RW         20MB    18.68MB    1%
+nfs-svm   volume01     ontap_sim_01_FC_1 
+                                    online     RW          2GB     1.90GB    0%
+2 entries were displayed.
+```
+
+A quick update to the watches.yml to add the finalizer configuration:
+
+```yaml
+---
+# Use the 'create api' subcommand to add watches to this file.
+- version: v1alpha1
+  group: ontap.vaughanross.io
+  kind: Volume
+  role: volume
+  finalizer:
+    name: ontap.vaughanross.io/finalizer
+    vars:
+      state: absent
+- version: v1alpha1
+  group: ontap.vaughanross.io
+  kind: StorageVirtualMachine
+  role: storagevirtualmachine
+  finalizer:
+    name: ontap.vaughanross.io/finalizer
+    vars:
+      state: absent
+#+kubebuilder:scaffold:watch
+```
+
+```bash
+❯ kubectl delete volumes.ontap.vaughanross.io volume01         
+volume.ontap.vaughanross.io "volume01" deleted
+
+❯ ssh admin@192.168.2.201
+ontap-sim::> volume show -vserver nfs-svm 
+Vserver   Volume       Aggregate    State      Type       Size  Available Used%
+--------- ------------ ------------ ---------- ---- ---------- ---------- -----
+nfs-svm   nfs_svm_root ontap_sim_01_FC_1 
+                                    online     RW         20MB    18.67MB    1%
+```
+
+Done and dusted!
+
+== Closing Thoughts
+
+By running this POC, I've learnt how easy it is to start building an Ansible based operator with the SDK that can manage external infrastructure as code, all without writing a single line of Go.
+
+I know I've only scratched the surface here, both in terms of the SDK's capabilities and what we can ultimately do with the ONTAP operator (given how extensive the ONTAP Ansible collection is). 
+
+I'm left eager to see the creative ways others will use Ansible based operators over time as Kubernetes adoption increases and the framework matures.
+
+You can view any of the code for this operator here: https://github.com/vrd83/ontap-operator
