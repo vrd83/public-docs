@@ -39,7 +39,7 @@ Python, Golang:::
 
 DevOps, IaC & K8s: :: 
 Infrastructure Provisioning:::
-Terraform
+Terraform, Terraform Cloud, Packer
 Configuration Management:::
 Ansible, AWX (Ansible Tower)
 Containers:::
@@ -47,7 +47,7 @@ Docker, Podman
 CI/CD:::
 Drone
 Kubernetes:::
-Openshift, GKE, Rancher, "K8s The Hard Way :)", Traefik, LinkerD, NetApp Astra, Helm
+Openshift, GKE, Rancher, "K8s The Hard Way :)", Traefik, LinkerD, NetApp Astra, Helm, Vault
 Monitoring and Observability:::
 Prometheus, AlertManager, Victoria Metrics, Grafana, Grafana Loki
 
