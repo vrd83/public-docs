@@ -1,0 +1,67 @@
+:doctype: book
+:imagesdir: ../images
+:nofooter:
+
+Vaughan Delport:: 
+Cloud Native Engineer +
+Melbourne, Australia
+
+image:linkedin.png[20,20] | https://www.linkedin.com/in/vaughandelport/
+
+
+=== Work Experience
+'''
+I have been fortunate to work in various roles across a broad range of organizations, including large managed service providers, professional services, financial institutions and tier 1 vendors. Please connect with me on LinkedIn if you'd like further details.
+
+=== Qualifications
+'''
+image:gcp.png[20,20] | https://www.credential.net/ed64b195-577c-4c36-b1f2-3df15f0a9f28[Google Cloud Professional Cloud Architect]
+
+image:k8s.png[20,20] | https://www.credly.com/badges/b7c99b2a-842f-40a2-b162-ce3d14b9404f[CKA: Certified Kubernetes Administrator]
+
+image:k8s.png[20,20] | https://www.credly.com/badges/82e6b9f4-2c3c-4a93-97d9-647fa6544034[CKAD: Certified Kubernetes Application Developer]
+
+image:k8s.png[20,20] | https://www.credly.com/badges/f79fae63-5d77-4679-a1cc-37be1275c581[CKS: Certified Kubernetes Security Specialist]
+
+
+=== Engineering XP
+'''
+I've enjoyed a focus on the every expanding CNCF landscape over the last few years and would like to highlight just a few of the more recent platforms, skills and tools I've worked with:
+
+[horizontal]
+
+Cloud Provider: :: 
+GCP:::
+Cloud Storage, Cloud Functions, Cloud Run, GKE, Cloud SQL
+
+Programming Languages: ::
+Python, Golang:::
+
+DevOps, IaC & K8s: :: 
+Infrastructure Provisioning:::
+Terraform
+Configuration Management:::
+Ansible, AWX (Ansible Tower)
+Containers:::
+Docker, Podman
+CI/CD:::
+Drone
+Kubernetes:::
+Openshift, GKE, Rancher, "K8s The Hard Way :)", Traefik, LinkerD, NetApp Astra, Helm
+Monitoring and Observability:::
+Prometheus, AlertManager, Victoria Metrics, Grafana, Grafana Loki
+
+Data Engineering: ::
+Python Pandas, Jupiter Notebooks, SQL (coding), MySQL, Postgres, MongoDB
+
+Server Management: :: 
+Linux:::
+Ubuntu/Debian, CentOS, RHEL
+Windows:::
+Server, HyperV
+
+<<<
+
+=== Personal Interests
+'''
+I'm a proud geek and love watching SCI-FI (how great is The Expanse!), reading Fantasy novels and video gaming (I look forward to eventually getting my hands on a Steam Deck). When not doing any of those things you'll likely find me walking the dog along the beach or out for a skate on my electric skateboard.
